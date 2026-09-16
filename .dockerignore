@@ -7,3 +7,4 @@ README.md
 # The credential is MOUNTED at runtime, never built in. In the context it would
 # be readable in an image layer by anyone who pulls it.
 plow-credentials
+docs/

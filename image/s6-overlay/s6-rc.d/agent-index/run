@@ -48,7 +48,7 @@ INDEX_INSTALL_URL='https://github.com/MedLeveo/aspen-hermes-agent/blob/main/READ
 INDEX_VIDEO='WWfMGzHBsz4'
 # Screenshots, https only, space-separated. Empty sends no --image at all, and
 # an absent field leaves whatever the page already shows.
-INDEX_IMAGES=''
+INDEX_IMAGES='https://raw.githubusercontent.com/MedLeveo/aspen-hermes-agent/main/docs/luna-conversation.png'
 
 # Registering also mints a key, so it cannot run every pass. It runs when the
 # client says this install is not registered, and again only when the text
