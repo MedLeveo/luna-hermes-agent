@@ -20,73 +20,103 @@ export PATH
 # read here, before dropping to the agent's uid. AGENT_ID is which agent this
 # is; without it there is nothing to report FOR, so the service stands down
 # rather than guessing a name.
-PLOW_AGENT_TOKEN=$(cat /run/s6/container_environment/PLOW_AGENT_TOKEN 2>/dev/null || true)
-AGENT_ID=$(cat /run/s6/container_environment/AGENT_ID 2>/dev/null || true)
-export AGENT_ID
+envval() { cat "/run/s6/container_environment/$1" 2>/dev/null || true; }
+PLOW_AGENT_TOKEN=$(envval PLOW_AGENT_TOKEN)
+PLOW_API_BASE=$(envval PLOW_API_BASE)
+AGENT_ID=$(envval AGENT_ID)
 
-# The agent's home is where its usage store lives, and the client keeps its
-# ledger beside that store. Fixed, not overridable: this image puts the home
+# The agent's home is where its usage store lives, and the client keeps this
+# install's identity beside it. Fixed, not overridable: this image puts the home
 # there, and a second way to say where it is only creates the case where the
 # reporter and the agent disagree about which store is theirs.
 HERMES_HOME=/var/lib/hermes
-export HERMES_HOME
 
-if [ -z "$AGENT_ID" ]; then
-  echo "agent-index: no AGENT_ID in this container's environment, so there is no" >&2
-  echo "agent to report for -- standing down. Set it where this container is" >&2
-  echo "started (plow-agents compose.yml)." >&2
-  exec sleep 86400
-fi
-
-# What the listing actually says. Registration is the only way to set these,
-# and an agent registered bare -- which this was -- gets a row with no name, no
-# description and no link to its source. That row is on a page whose whole
-# purpose is someone deciding whether to install it.
+# What the listing says. Registration is the only way to set these, and the
+# index marks an agent "not ready to install" without a link to install
+# instructions. Someone else's install of this image registers with the same
+# text and is told the id is taken -- it joins as an installer, and the page
+# stays as written here.
 INDEX_NAME='Luna'
 INDEX_BLURB='Text it how far along you are. It tracks the week, raises the exams and deadlines it calls for, reads what you photograph, and never reassures you past a red flag.'
 INDEX_REPO='https://github.com/MedLeveo/aspen-hermes-agent'
 INDEX_RUNTIME='hermes'
+INDEX_INSTALL_URL='https://github.com/MedLeveo/aspen-hermes-agent#running-it'
 
-# Registering also mints a key, so it cannot run every hour. It runs when there
-# is no key, and again only when this text differs from what the index last
-# accepted -- which is what makes an edit here reach the page at all.
-LISTING_FILE="$HERMES_HOME/.agent-index/listing"
-LISTING_NOW="$INDEX_NAME|$INDEX_BLURB|$INDEX_REPO|$INDEX_RUNTIME"
+# Registering also mints a key, so it cannot run every pass. It runs when the
+# client says this install is not registered, and again only when the text
+# above differs from what the index last accepted -- which is what makes an edit
+# here reach the page at all.
+LISTING_FILE="$HERMES_HOME/.agent-index-listing"
+LISTING_NOW="$INDEX_NAME|$INDEX_BLURB|$INDEX_REPO|$INDEX_RUNTIME|$INDEX_INSTALL_URL"
+
+# Every invocation of the client, with an environment stated in full. `env -i`
+# rather than unsetting by name: a name added to the container later would leak
+# by default. HERMES_HOME in every call, registration included -- the client
+# keeps this install's identity under it, and a registration that wrote it
+# anywhere else would leave every report reading an empty one. The bearer is not
+# in here: only registration adds it.
+client() {
+  /command/s6-setuidgid hermes env -i \
+    PATH="$PATH" HOME="$HERMES_HOME" HERMES_HOME="$HERMES_HOME" \
+    AGENT_ID="$AGENT_ID" ${PLOW_API_BASE:+PLOW_API_BASE="$PLOW_API_BASE"} \
+    ${TZ:+TZ="$TZ"} \
+    "$@"
+}
+CLIENT="/opt/hermes/.venv/bin/python3 /opt/plow/agent-index-client.py"
+
+if [ -z "$AGENT_ID" ]; then
+  echo "agent-index: no AGENT_ID in this container's environment, so there is no" >&2
+  echo "agent to report for -- standing down. The image sets one; something" >&2
+  echo "where this container is started has cleared it." >&2
+  exec sleep 86400
+fi
 
 while :; do
-  # The pinned client owns assertion exchange, aik_ format and atomic storage.
-  # The image only invokes it; no image-owned HTTP path can hand the broad Plow
-  # bearer to the Index.
-  LISTING_WAS=$(/bin/cat "$LISTING_FILE" 2>/dev/null || true)
-  if [ ! -s "$HERMES_HOME/.agent-index/token" ] || [ "$LISTING_NOW" != "$LISTING_WAS" ]; then
-    # Output kept, not sent to /dev/null: this prints the agent's public URL,
-    # and the server's own warning about any field it refused to store.
-    if /command/s6-setuidgid hermes \
-      env HOME="$HERMES_HOME" AGENT_ID="$AGENT_ID" PLOW_AGENT_TOKEN="$PLOW_AGENT_TOKEN" \
-      /opt/hermes/.venv/bin/python3 /opt/plow/agent-index-client.py \
-      --register --agent "$AGENT_ID" \
-      --name "$INDEX_NAME" --blurb "$INDEX_BLURB" \
-      --repo "$INDEX_REPO" --runtime "$INDEX_RUNTIME"; then
-      # As the agent, because the directory is the agent's -- and on a host
-      # where root is not privileged, root could not write here anyway.
-      /command/s6-setuidgid hermes /bin/sh -c \
-        'printf %s "$1" > "$2"' sh "$LISTING_NOW" "$LISTING_FILE" || true
+  # Registered already? The client owns that question, because it owns where
+  # the answer lives and it MOVES it: testing .agent-index/token, as this did,
+  # stays true forever once the client has retired that file, and re-registers
+  # every pass with a fresh key each time.
+  #
+  #   0  registered      3  not registered      2  state is there, unreadable
+  #
+  # 2 must not be treated as 3: registering over state the client could not read
+  # mints under a new install id and strands what this install already reported.
+  client $CLIENT status >/dev/null
+  state=$?
+  LISTING_WAS=$(cat "$LISTING_FILE" 2>/dev/null || true)
+
+  if [ "$state" = 2 ]; then
+    echo "agent-index: the client could not read this install's state (above);" >&2
+    echo "standing off rather than registering over it." >&2
+    /bin/sleep 3600
+    continue
+  fi
+
+  if [ "$state" = 3 ] || [ "$LISTING_NOW" != "$LISTING_WAS" ]; then
+    # The one call with a use for the bearer: it trades it for the report-only
+    # key everything else authenticates with. Output kept -- it prints the
+    # public URL, and the server's warning naming any field it refused.
+    if client env PLOW_AGENT_TOKEN="$PLOW_AGENT_TOKEN" $CLIENT \
+        --register --agent "$AGENT_ID" \
+        --name "$INDEX_NAME" --blurb "$INDEX_BLURB" \
+        --repo "$INDEX_REPO" --runtime "$INDEX_RUNTIME" \
+        --install-url "$INDEX_INSTALL_URL"; then
+      # As the agent: the home is the agent's, and on a host where root is not
+      # privileged root could not write here anyway.
+      client /bin/sh -c 'printf %s "$1" > "$2"' sh "$LISTING_NOW" "$LISTING_FILE" || true
     else
-      echo "agent-index: registration failed, not reporting this hour" >&2
+      echo "agent-index: registration failed, not reporting this pass" >&2
       /bin/sleep 3600
       continue
     fi
   fi
 
-  # No PLOW_AGENT_TOKEN in this environment. The client finds the key the
-  # exchange stored in the agent's home and reports with that.
+  # No bearer here. The client finds the key registration stored and reports
+  # with that.
   #
   # Never fatal. A collector that failed says so and exits non-zero; a crashing
-  # longrun would be respawned in a tight loop, which turns one bad hour into a
+  # longrun would be respawned in a tight loop, which turns one bad pass into a
   # hot loop against the index.
-  /command/s6-setuidgid hermes \
-    env HOME="$HERMES_HOME" HERMES_HOME="$HERMES_HOME" AGENT_ID="$AGENT_ID" \
-    /opt/hermes/.venv/bin/python3 /opt/plow/agent-index-client.py \
-    || echo "agent-index: reporter exited non-zero, see the line above" >&2
+  client $CLIENT || echo "agent-index: reporter exited non-zero, see the line above" >&2
   /bin/sleep 3600
 done
