@@ -78,8 +78,8 @@ export PATH="$PWD/plow-agents/bin:$PATH"
 Then this agent:
 
 ```sh
-git clone https://github.com/MedLeveo/aspen-hermes-agent.git
-cd aspen-hermes-agent
+git clone https://github.com/MedLeveo/luna-hermes-agent.git
+cd luna-hermes-agent
 ```
 
 Log in — it prints an activation phrase to text from the handset that owns the
