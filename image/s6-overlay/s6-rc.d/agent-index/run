@@ -33,14 +33,16 @@ HERMES_HOME=/var/lib/hermes
 
 # What the listing says. Registration is the only way to set these, and the
 # index marks an agent "not ready to install" without a link to install
-# instructions. Someone else's install of this image registers with the same
+# instructions. The link is the README itself, not an anchor into it: the
+# index refused '#running-it' without saying why, and every link it has
+# accepted is a plain file or repo URL. Someone else's install of this image registers with the same
 # text and is told the id is taken -- it joins as an installer, and the page
 # stays as written here.
 INDEX_NAME='Luna'
 INDEX_BLURB='Text it how far along you are. It tracks the week, raises the exams and deadlines it calls for, reads what you photograph, and never reassures you past a red flag.'
 INDEX_REPO='https://github.com/MedLeveo/aspen-hermes-agent'
 INDEX_RUNTIME='hermes'
-INDEX_INSTALL_URL='https://github.com/MedLeveo/aspen-hermes-agent#running-it'
+INDEX_INSTALL_URL='https://github.com/MedLeveo/aspen-hermes-agent/blob/main/README.md'
 
 # Registering also mints a key, so it cannot run every pass. It runs when the
 # client says this install is not registered, and again only when the text
