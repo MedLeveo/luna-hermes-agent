@@ -37,6 +37,9 @@ HOST_SETUP = "/exe.dev/setup"
 CREDENTIALS_WAIT_S = 60
 RETRIES = 10
 RETRY_DELAY_S = 3
+# A 1-click agent boots before its owner has texted it: no home chat exists yet.
+HOME_POLL_INTERVAL_S = 30
+HOME_WAIT_LOG_INTERVAL_S = 3600
 TIMEOUT_S = 10
 # The one entry in `mcp_servers` this image manages. Any other belongs to
 # whoever added it and is left exactly as it is.
@@ -122,14 +125,14 @@ class Identity(BaseModel):
     mcp_url: str | None
 
 
-def home_chat(identity: Identity) -> Chat:
+def home_chat(identity: Identity) -> Chat | None:
     """The one chat that is this agent talking to the person it belongs to.
 
     Plow does not name it, so the image picks it, by the same rule Plow uses:
     an active chat holding exactly one member -- the owner -- and this agent.
     Anything else in a chat makes it a group, or somebody else's. Zero matches
-    or several is not a thing to guess at: the home channel is where the agent
-    answers, and the wrong one is an agent talking to the wrong people.
+    means the owner has not made contact yet. Several still refuse: the wrong
+    home is an agent talking to the wrong people.
     """
     def is_home(chat: Chat) -> bool:
         members = [p for p in chat.participants if isinstance(p, MemberParticipant)]
@@ -146,7 +149,9 @@ def home_chat(identity: Identity) -> Chat:
         )
 
     matches = [chat for chat in identity.chats if is_home(chat)]
-    if len(matches) != 1:
+    if not matches:
+        return None
+    if len(matches) > 1:
         seen = "; ".join(
             f"{chat.uid} status={chat.status} "
             + ",".join(
@@ -195,13 +200,15 @@ def read_credentials() -> Credentials:
         die(f"{CREDENTIALS} is not the two lines this image reads:\n{error.errors(include_input=False)}")
 
 
-def ask_plow(credentials: Credentials) -> Identity:
+def ask_plow(credentials: Credentials, *, waiting: bool = False) -> Identity | None:
     """Ask Plow who this agent is, retrying only what waiting could fix.
 
     A VM's network is not always up when its first service is: worth retrying,
     not worth surviving. An agent that cannot be told who it is must not come
     up as whoever it was last time -- a home volume outlives its tenant, and
     the failure that hides is a new tenant answering in the previous one's chat.
+    Once waiting for first contact, transient failures go back to the outer
+    poll loop instead: that wait can outlast any bounded boot retry budget.
     """
     url = credentials.plow_api_base.rstrip("/") + "/v1/agents/cloud/me"
     request = urllib.request.Request(
@@ -227,6 +234,8 @@ def ask_plow(credentials: Credentials) -> Identity:
                 # Same reason as the credential above: the raw answer is a
                 # roster of real people.
                 die(f"{url} answered something that is not an identity:\n{error.errors(include_input=False)}")
+        if waiting:
+            return None
         print(f"plow-init: attempt {attempt} to reach Plow failed, retrying ({reason})", file=sys.stderr)
         time.sleep(RETRY_DELAY_S)
     die(f"gave up asking Plow who this agent is after {RETRIES} attempts -- refusing to start")
@@ -391,8 +400,19 @@ def main() -> None:
     harden_home()
 
     credentials = read_credentials()
-    identity = ask_plow(credentials)
-    home = home_chat(identity)
+    next_wait_log = time.monotonic()
+    waited = False
+    while True:
+        identity = ask_plow(credentials, waiting=waited)
+        home = home_chat(identity) if identity is not None else None
+        if home is not None:
+            break
+        waited = True
+        now = time.monotonic()
+        if now >= next_wait_log:
+            print("plow-init: waiting for the owner's home chat", file=sys.stderr)
+            next_wait_log = now + HOME_WAIT_LOG_INTERVAL_S
+        time.sleep(HOME_POLL_INTERVAL_S)
     values = {
         "PLOW_API_BASE": credentials.plow_api_base,
         "PLOW_AGENT_TOKEN": credentials.plow_agent_token,
@@ -424,6 +444,15 @@ def main() -> None:
     os.setgroups([])
     os.setgid(hermes.pw_gid)
     os.setuid(hermes.pw_uid)
+    # Only a home observed after waiting gets an empty anchor, so the chat
+    # plugin answers the owner's first text instead of anchoring past it. An
+    # immediate home may have history the plugin must newest-anchor, not replay.
+    if waited:
+        try:
+            with open(os.path.join(os.environ.get("HERMES_HOME") or HOME_DIR, "plow_chat_last_uid"), "x"):
+                pass
+        except FileExistsError:
+            pass
     configure(identity, seed_model)
     print(f"plow-init: configured from {CREDENTIALS} as {home.uid}", file=sys.stderr)
 
