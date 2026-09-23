@@ -1,5 +1,5 @@
 #!/bin/sh
-# Report this agent's token usage to the Agent Index, hourly.
+# Report this agent's token usage to the Agent Index, every 5 minutes.
 #
 # NO SWITCH. The reporter is here because somebody put it in this image, and
 # that is the decision: an agent whose owner does not want their usage on the
@@ -96,7 +96,7 @@ while :; do
   if [ "$state" = 2 ]; then
     echo "agent-index: the client could not read this install's state (above);" >&2
     echo "standing off rather than registering over it." >&2
-    /bin/sleep 3600
+    /bin/sleep 300
     continue
   fi
 
@@ -118,7 +118,7 @@ while :; do
       client /bin/sh -c 'printf %s "$1" > "$2"' sh "$LISTING_NOW" "$LISTING_FILE" || true
     else
       echo "agent-index: registration failed, not reporting this pass" >&2
-      /bin/sleep 3600
+      /bin/sleep 300
       continue
     fi
   fi
@@ -130,5 +130,5 @@ while :; do
   # longrun would be respawned in a tight loop, which turns one bad pass into a
   # hot loop against the index.
   client $CLIENT || echo "agent-index: reporter exited non-zero, see the line above" >&2
-  /bin/sleep 3600
+  /bin/sleep 300
 done
